@@ -1,7 +1,8 @@
+use itertools::Itertools;
 use serde_json::json;
-use serde_json::Value;
 use worker::*;
 
+mod github_events;
 mod utils;
 
 fn log_request(req: &Request) {
@@ -52,12 +53,22 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             Response::ok(version)
         })
         .post_async("/github-webhook", |mut req, ctx| async move {
-            {
-                let payload = req.json::<Value>().await?;
-                
-                return Response::ok(payload.as_str().unwrap());
+            let event_name = req.headers().get("X-GitHub-Event")?;
+
+            match event_name {
+                Some(event) if event.eq("push") => {
+                    let payload = req.json::<github_events::PushEvent>().await?;
+                    let modified_files = payload
+                        .commits
+                        .iter()
+                        .flat_map(|commit| commit.added.iter().chain(commit.modified.iter()))
+                        .collect::<Vec<_>>();
+
+                    Response::ok(format!("Modified files: {}", modified_files.iter().join(", ")))
+                }
+                Some(unknown) => Response::ok(format!("Ignored {unknown} event")),
+                None => Response::error(format!("Missing X-GitHub-Event header"), 400),
             }
-            Response::error("Bad Request", 400);
         })
         .run(req, env)
         .await
